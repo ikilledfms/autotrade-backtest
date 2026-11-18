@@ -1,0 +1,73 @@
+; AutoTrade.set — min-lot DEMO backtest settings (prince decision 2026-11-16 18:50 WIB)
+; Logic test only on the $100 HFM demo: a computed lot below the 0.01 minimum
+; is allowed ONLY if its risk is <= InpMinLotRiskCapPct (5%) of equity.
+; All other values are the EA defaults (AutoTrade.mq5, 2026-11-16 build, 47 inputs).
+; Edit this file in the repo to change backtest inputs — no EA source change needed.
+; NOTE: InpManualNews defaults (Dec 2026–Feb 2027) fall OUTSIDE the Aug–Oct 2026
+; backtest window, and the tester has no economic calendar — so no NFP/FOMC
+; blackout applies inside this backtest. That is a known limitation, see README.
+
+; === Instrument & Identity ===
+InpSymbol=XAUUSD
+InpMagic=20261116
+InpDeviationPts=30
+
+; === Risk (§5) ===
+InpRiskPct=1.0
+InpRRTarget=3.0
+InpMaxDailyLossPct=3.0
+InpDailyTargetPct=2.0
+InpMaxConsecLoss=3
+InpMaxDrawdownPct=15.0
+InpMinLotRiskCapPct=5.0
+
+; === Routes (§1-§2) ===
+InpUseRouteA=true
+InpUseRouteB=true
+InpUseRouteC=true
+
+; === Route A: Zona 3-Candle (§1) ===
+InpZoneHourWIB=5
+InpBreakTolerancePct=5.0
+InpEntryBufferUSD=0.30
+InpSLBufferUSD=0.30
+InpSetupMaxAgeBars=3
+
+; === Route B: FIBO50 (§2) ===
+InpSwingBars=5
+InpMinSwingUSD=5.0
+InpFiboClose1=0.50
+InpFiboClose2=0.25
+
+; === Route C: SMC Kill Zone (§2) ===
+InpImpulseMinATR=1.0
+InpSMC_TPExt=261.8
+
+; === Filters (§3) ===
+InpADXMin=25.0
+InpUseBBMAFilter=true
+InpUseRSIFilter=true
+InpRequireH1Pattern=false
+InpMaxSpreadUSD=1.00
+InpMinDailyRangeUSD=20.0
+InpAvoidRoundNumbers=true
+InpRoundNudgeUSD=0.50
+
+; === Time & News (§4) ===
+InpTradeOnlyInKillZone=true
+InpKZLondonStartWIB=13
+InpKZLondonEndWIB=16
+InpKZNYStartWIB=19
+InpKZNYEndWIB=24
+InpAvoidFridayAfternoon=true
+InpFridayCutoffWIB=15
+InpNewsBeforeMin=30
+InpNewsAfterMin=60
+InpUseNewsCalendar=true
+InpManualNews=2026.12.04 20:30,2026.12.17 02:00,2027.01.08 20:30,2027.01.28 02:00,2027.02.05 20:30
+
+; === Position Management (§5) ===
+InpMaxHoldHours=10
+InpUseHeartbeat=false
+InpHeartbeatGV=AutoTrade_Heartbeat
+InpHeartbeatMaxAgeSec=300
