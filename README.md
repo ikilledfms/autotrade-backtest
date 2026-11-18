@@ -1,8 +1,16 @@
 # Backtest AutoTrade EA via GitHub Actions
 
-**Status: BELUM TERUJI end-to-end.** Run pertama adalah shakedown — kemungkinan
-perlu 1–2x iterasi (login/config) sebelum backtest jalan penuh. Jangan anggap
-jalur ini sudah terbukti sampai satu run selesai dan laporan `.htm`-nya keluar.
+**Status: run #3 SUCCESS tapi backtest KOSONG (0 trade).** EA compile bersih
+(0 errors, 0 warnings) sejak perbaikan commit 37ba6b9, tapi Strategy Tester
+jalan tanpa histori sama sekali (Bars 0, Ticks 0, History Quality 0%, Initial
+Deposit 0.00, Leverage 1:100, Symbols 0) — terminal tester tidak login dan
+tidak ada histori yang tersinkron sebelum tester jalan. **Perbaikan run #4:**
+step baru "Sync XAUUSD history" menjalankan script `ea/SyncHistory.mq5`
+sebelum tester — script itu login, memaksa unduh histori M1 XAUUSD
+(2026.08.01–2026.10.19) via CopyRates, dan menulis
+`MQL5\Files\sync-result.txt`; step gagal cepat kalau terminal tidak
+terhubung atau bar M1 < 50000. Jangan anggap jalur ini sudah terbukti sampai
+satu run menghasilkan laporan `.htm` dengan trade > 0.
 
 ## Kenapa jalur ini
 
@@ -48,6 +56,7 @@ tapi tidak direkomendasikan.
    ```
    .github/workflows/mt5-backtest.yml
    ea/AutoTrade.mq5
+   ea/SyncHistory.mq5
    ea/AutoTrade.set
    tester/tester.ini.template
    tester/login.ini.template
@@ -126,10 +135,12 @@ TIDAK trading live dan tidak bisa menyentuh dana real.**
 Histori lokal `XAUUSD_M1_20260801-20261019_MT5.csv` (81.384 bar) **sengaja
 tidak** dimasukkan ke workflow: impor CSV headless tidak dimungkinkan di MT5
 build 6320 — tombol impor di-grey-out untuk simbol server, dan custom symbol
-tidak bisa dibuat tanpa GUI. Jalur utama adalah sinkronisasi dari server
-broker. Bila sinkronisasi gagal, CSV tetap tersedia untuk impor manual di
-terminal desktop (lalu backtest di mesin yang terhubung), bukan lewat workflow
-ini.
+tidak bisa dibuat lewat GUI. Jalur utama adalah sinkronisasi dari server
+broker (step SyncHistory di workflow). Bila sinkronisasi gagal, CSV tetap
+tersedia untuk impor manual di terminal desktop (lalu backtest di mesin yang
+terhubung), bukan lewat workflow ini. Opsi berikutnya bila sync server tetap
+gagal: buat custom symbol + impor CSV lewat fungsi MQL5 `CustomSymbolCreate` /
+`CustomRatesUpdate` dari script (tanpa GUI) — belum dibangun.
 
 ## Keamanan
 
