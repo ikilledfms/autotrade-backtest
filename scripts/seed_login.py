@@ -31,12 +31,20 @@ if not LOGIN or not PASSWORD or not SERVER:
     sys.exit(2)
 
 path = os.path.join(MT5_DIR, "terminal64.exe")
-print(f"seed_login: initializing terminal at {path} (portable)...")
-ok = mt5.initialize(path=path, login=int(LOGIN), password=PASSWORD,
-                    server=SERVER, timeout=300000, portable=True)
-if not ok:
-    print(f"seed_login: initialize failed, last_error={mt5.last_error()}",
+ok = False
+for attempt in range(1, 4):
+    print(f"seed_login: initialize attempt {attempt}/3 at {path} (portable)...")
+    ok = mt5.initialize(path=path, login=int(LOGIN), password=PASSWORD,
+                        server=SERVER, timeout=300000, portable=True)
+    if ok:
+        break
+    print(f"seed_login: attempt {attempt} failed, last_error={mt5.last_error()}",
           file=sys.stderr)
+    mt5.shutdown()
+    if attempt < 3:
+        time.sleep(60)
+if not ok:
+    print("seed_login: initialize failed after 3 attempts", file=sys.stderr)
     sys.exit(1)
 
 deadline = time.time() + 300
