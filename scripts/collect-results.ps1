@@ -22,13 +22,24 @@ if (Test-Path $appDataTerminals) {
 }
 
 $foundReport = $false
+$srcIndex = 0
 foreach ($dir in $reportDirs) {
     $htm = Join-Path $dir 'AutoTrade-Backtest.htm'
     $png = Join-Path $dir 'AutoTrade-Backtest.png'
     if (Test-Path $htm) { Copy-Item $htm (Join-Path $OutDir 'AutoTrade-Backtest.htm'); $foundReport = $true }
     if (Test-Path $png) { Copy-Item $png (Join-Path $OutDir 'AutoTrade-Backtest.png') }
+    # Journals: copy from EVERY location with a distinct prefix (run #3 showed
+    # a single 20261118.log can hide which terminal wrote it).
     $logsDir = Join-Path $dir 'Logs'
-    if (Test-Path $logsDir) { Copy-Item (Join-Path $logsDir '*.log') (Join-Path $OutDir 'logs') -ErrorAction SilentlyContinue }
+    if (Test-Path $logsDir) {
+        Get-ChildItem (Join-Path $logsDir '*.log') | ForEach-Object {
+            Copy-Item $_.FullName (Join-Path $OutDir "logs\src$srcIndex-$($_.Name)") -ErrorAction SilentlyContinue
+        }
+    }
+    # History-sync result file written by the SyncHistory script.
+    $syncFile = Join-Path $dir 'MQL5\Files\sync-result.txt'
+    if (Test-Path $syncFile) { Copy-Item $syncFile (Join-Path $OutDir 'sync-result.txt') -ErrorAction SilentlyContinue }
+    $srcIndex++
 }
 
 if (-not [string]::IsNullOrWhiteSpace($Mt5Dir)) {
