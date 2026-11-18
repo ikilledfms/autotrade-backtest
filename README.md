@@ -1,19 +1,18 @@
 # Backtest AutoTrade EA via GitHub Actions
 
-**Status: run #4 FAILED at the history-sync step (18 Nov ~18:11 WIB).**
-SyncHistory.mq5 compiled clean (0 errors, 0 warnings) but never ran:
-sync-result.txt was never created — the pre-flight terminal spent its 120s
-on first-run recompilation + LiveUpdate and never logged in, and the sync
-terminal wrote only startup lines then total silence for 10 min. Prince
-verified the server name from the HFM app (HFMarketsGlobal-Demo 4, login
-235368272) — the secret is CORRECT; the terminal simply never attempts a
-login from `/config:` ini files on a fresh runner (no saved session exists
-yet). **Perbaikan run #5:** step baru "Seed broker login via MetaTrader5
-Python" (`scripts/seed_login.py`) logs in once through the terminal's own
-API, which saves the account into the data folder; pre-flight becomes a
-hard gate (fails unless a login marker appears in the journal within 600s);
-sync step polls the journal while waiting. Jangan anggap jalur ini sudah
-terbukti sampai satu run menghasilkan laporan `.htm` dengan trade > 0.
+**Status: run #5 FAILED at the seed-login step (18 Nov ~19:40 WIB).**
+`mt5.initialize()` gave IPC timeout (-10005) after 300s — the Python
+package could not connect to the terminal at all, so the HFM login was
+never attempted (password still untested; the server name is already
+verified correct from prince's HFM app screenshot). The terminal was busy
+with first-run recompilation (131 files) + a 71 MB LiveUpdate download
+when initialize was called; recompilation finished but IPC stayed dead
+until the timeout — likely the terminal restarted to apply the update.
+**Perbaikan run #6:** step "Warm up terminal" runs the terminal once for
+300s first so first-run setup finishes before the seed step, and
+`scripts/seed_login.py` retries initialize() up to 3 times with 60s gaps
+(step timeout raised to 30 min). Jangan anggap jalur ini sudah terbukti
+sampai satu run menghasilkan laporan `.htm` dengan trade > 0.
 
 ## Kenapa jalur ini
 
@@ -133,9 +132,11 @@ TIDAK trading live dan tidak bisa menyentuh dana real.**
   tick).
 - **Dialog first-run:** run #4 menunjukkan terminal baru bisa diam total
   (tidak ada percobaan login) sampai timeout — kemungkinan terjebak di dialog
-  "Open an Account". Step seed login (run #5) dibuat untuk melewati ini
-  dengan login lewat API terminal; bila pre-flight hard gate tetap gagal,
-  journal di artifact menunjukkan penyebabnya.
+  "Open an Account". Run #5 menunjukkan masalah lanjutannya: `mt5.initialize()`
+  IPC timeout karena terminal masih sibuk first-run recompilation + LiveUpdate
+  saat dipanggil. Step warm-up + retry (run #6) dibuat untuk melewati ini;
+  bila pre-flight hard gate tetap gagal, journal di artifact menunjukkan
+  penyebabnya.
 - **Sintaks PowerShell belum divalidasi lokal** (tidak ada PowerShell di VM ini)
   — ditulis hati-hati dan di-review baris-per-baris; bila step PowerShell
   error, log-nya yang dibaca dulu.
