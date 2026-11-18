@@ -1,10 +1,15 @@
-# MT5 Strategy Tester backtest — AutoTrade EA (one-off, manual trigger)
+# MT5 Strategy Tester backtest - AutoTrade EA (one-off, manual trigger)
 #
-# Status: run #1 (2026-11-18) FAILED at the compile step — MetaEditor did not
-# run (no compile log produced; not an EA syntax error, and the pre-flight
-# broker login passed, so the Secrets are correct). The compile step now uses
-# absolute paths, captures MetaEditor stdout/stderr + exit code, and retries
-# without /portable with an %APPDATA% fallback for the log/.ex5.
+# Status: run #1 (2026-11-18) FAILED at the compile step - MetaEditor produced
+# no compile log (not an EA syntax error; pre-flight broker login passed, so
+# the Secrets are correct). Run #2 (2026-11-18) FAILED the same step in 0s:
+# the rewritten PowerShell FAILED TO PARSE - an em-dash inside a double-quoted
+# string broke the runner's script parsing before anything executed (the
+# "131 sample files" reading was wrong - that log came from the MT5
+# install/pre-flight, not the compile step). FIX: all em-dashes removed from
+# the workflow's PowerShell (ASCII-only); the compile step keeps absolute
+# paths, captured MetaEditor stdout/stderr + exit code, and the retry without
+# /portable with an %APPDATA% fallback for the log/.ex5.
 #
 # No credentials live in this repo. The demo login/password/server come from
 # GitHub Secrets (HFM_MT5_LOGIN / HFM_MT5_PASSWORD / HFM_MT5_SERVER) and are
@@ -13,16 +18,16 @@
 #
 # What it does:
 #   1. Installs MT5 silently on a windows-latest runner (direct internet, so
-#      the terminal can reach the HFM server and sync history — the thing the
+#      the terminal can reach the HFM server and sync history - the thing the
 #      local VM could not do).
 #   2. Pre-flight broker-login check (fails fast on explicit login failure).
 #   3. Compiles AutoTrade.mq5 with MetaEditor (0 errors, 0 warnings required).
 #   4. Runs terminal64.exe headless with /config:tester.ini ([Tester] section,
-#      ShutdownTerminal=1) — min-lot logic test on the $100 HFM demo.
+#      ShutdownTerminal=1) - min-lot logic test on the $100 HFM demo.
 #   5. Uploads the tester report (.htm + equity chart), terminal journal logs,
 #      compile log, .set and tester.ini.template as an artifact.
 
-name: MT5 Backtest — AutoTrade EA
+name: MT5 Backtest - AutoTrade EA
 
 run-name: Backtest AutoTrade ${{ inputs.from_date }} → ${{ inputs.to_date }} (Model ${{ inputs.model }})
 
@@ -107,7 +112,7 @@ jobs:
             if ($null -ne $logFile) { $journal = Get-Content -Raw -Path $logFile.FullName }
           }
           # Explicit trade-login failure markers. NOTE: 'MQL5.community authorization
-          # failed' is a harmless periodic line — it is deliberately NOT matched here.
+          # failed' is a harmless periodic line - it is deliberately NOT matched here.
           if ($journal -match 'login failed|invalid account|no connection|cannot connect|account disabled') {
             Stop-Process -Id $proc.Id -Force -ErrorAction SilentlyContinue
             throw 'Broker login failed (see journal excerpt in the step log). Check HFM_MT5_LOGIN / HFM_MT5_PASSWORD / HFM_MT5_SERVER secrets.'
@@ -115,7 +120,7 @@ jobs:
           if ($journal -match 'login on|connected to') {
             Write-Host 'Login looks good (journal shows login/connected).'
           } else {
-            Write-Warning 'No conclusive login marker in the journal after 120s — proceeding anyway; the tester run is the real test.'
+            Write-Warning 'No conclusive login marker in the journal after 120s - proceeding anyway; the tester run is the real test.'
           }
           Stop-Process -Id $proc.Id -Force -ErrorAction SilentlyContinue
           Start-Sleep -Seconds 5
@@ -150,33 +155,33 @@ jobs:
             $argList = $ExtraArgs + "/compile:`"$src`"", "/log:`"$log`""
             Write-Host "Running: $editor $($argList -join ' ')"
             $p = Start-Process -FilePath $editor -ArgumentList $argList -WorkingDirectory $env:MT5_DIR -Wait -PassThru -RedirectStandardOutput $outFile -RedirectStandardError $errFile
-            Write-Host "MetaEditor exit code: $($p.ExitCode) (note: MetaEditor exits 1 even on a successful compile — the log is authoritative)"
+            Write-Host "MetaEditor exit code: $($p.ExitCode) (note: MetaEditor exits 1 even on a successful compile - the log is authoritative)"
             if (Test-Path $outFile) { Write-Host '--- MetaEditor stdout ---'; Get-Content $outFile | Write-Host }
             if (Test-Path $errFile) { Write-Host '--- MetaEditor stderr ---'; Get-Content $errFile | Write-Host }
           }
           # Attempt 1: portable mode (data folder = MT5_DIR), absolute paths.
           Invoke-MetaEditor -ExtraArgs @('/portable')
           if (-not (Test-Path $log)) {
-            Write-Warning 'No compile log after /portable attempt — retrying without /portable (data folder under %APPDATA%).'
+            Write-Warning 'No compile log after /portable attempt - retrying without /portable (data folder under %APPDATA%).'
             Invoke-MetaEditor -ExtraArgs @()
             if (-not (Test-Path $log)) {
-              # MetaEditor without /portable writes into %APPDATA%\MetaQuotes\Terminal\<id>\MQL5\Experts — look there.
+              # MetaEditor without /portable writes into %APPDATA%\MetaQuotes\Terminal\<id>\MQL5\Experts - look there.
               $appDataTerminals = Join-Path $env:APPDATA 'MetaQuotes\Terminal'
               if (Test-Path $appDataTerminals) {
                 $foundLog = Get-ChildItem -Recurse -Filter 'AutoTrade-compile.log' $appDataTerminals -ErrorAction SilentlyContinue | Select-Object -First 1
                 if ($null -ne $foundLog) {
-                  Write-Host "Found compile log at $($foundLog.FullName) — copying to $log"
+                  Write-Host "Found compile log at $($foundLog.FullName) - copying to $log"
                   Copy-Item $foundLog.FullName $log
                 }
                 $foundEx5 = Get-ChildItem -Recurse -Filter 'AutoTrade.ex5' $appDataTerminals -ErrorAction SilentlyContinue | Select-Object -First 1
                 if ($null -ne $foundEx5) {
-                  Write-Host "Found AutoTrade.ex5 at $($foundEx5.FullName) — copying to $ex5"
+                  Write-Host "Found AutoTrade.ex5 at $($foundEx5.FullName) - copying to $ex5"
                   Copy-Item $foundEx5.FullName $ex5
                 }
               }
             }
           }
-          if (-not (Test-Path $log)) { throw 'Compile log not produced — MetaEditor did not run. See captured stdout/stderr above.' }
+          if (-not (Test-Path $log)) { throw 'Compile log not produced - MetaEditor did not run. See captured stdout/stderr above.' }
           $text = Get-Content -Raw -Path $log
           Write-Host $text
           if ($text -notmatch '0 errors, 0 warnings') { throw 'EA compile did not report 0 errors, 0 warnings. See log above.' }
@@ -191,7 +196,7 @@ jobs:
           $proc = Start-Process -FilePath (Join-Path $env:MT5_DIR 'terminal64.exe') -ArgumentList '/portable','/config:tester.ini' -WorkingDirectory $env:MT5_DIR -PassThru
           Write-Host "Terminal started (PID $($proc.Id)). Waiting up to 270 minutes for ShutdownTerminal=1 to close it..."
           if (-not $proc.WaitForExit(270 * 60 * 1000)) {
-            Write-Warning 'Tester did not exit within 270 minutes — stopping terminal.'
+            Write-Warning 'Tester did not exit within 270 minutes - stopping terminal.'
             $proc.Kill()
             throw 'Strategy Tester timed out (270 min). Journal logs are collected below for diagnosis.'
           }
