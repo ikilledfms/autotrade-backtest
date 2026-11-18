@@ -7,9 +7,15 @@
 # string broke the runner's script parsing before anything executed (the
 # "131 sample files" reading was wrong - that log came from the MT5
 # install/pre-flight, not the compile step). FIX: all em-dashes removed from
-# the workflow's PowerShell (ASCII-only); the compile step keeps absolute
-# paths, captured MetaEditor stdout/stderr + exit code, and the retry without
-# /portable with an %APPDATA% fallback for the log/.ex5.
+# the workflow's PowerShell (ASCII-only). Run #3 (2026-11-18) SUCCESS:
+# AutoTrade.mq5 compiled CLEAN (0 errors, 0 warnings) - compile problem
+# SOLVED. But the backtest was EMPTY: 0 trades, Bars 0, Ticks 0, History
+# Quality 0%, Initial Deposit 0.00, Leverage 1:100, Symbols 0 - the tester
+# ran with no account logged in and no history synced. FIX #3: a history-sync
+# step runs the SyncHistory script (ea/SyncHistory.mq5) before the tester:
+# it logs in, force-downloads XAUUSD M1 history for 2026.08.01-2026.10.19
+# via CopyRates, and writes MQL5\Files\sync-result.txt; the step fails fast
+# unless the terminal is connected and >= 50000 M1 bars arrived.
 #
 # No credentials live in this repo. The demo login/password/server come from
 # GitHub Secrets (HFM_MT5_LOGIN / HFM_MT5_PASSWORD / HFM_MT5_SERVER) and are
@@ -21,10 +27,14 @@
 #      the terminal can reach the HFM server and sync history - the thing the
 #      local VM could not do).
 #   2. Pre-flight broker-login check (fails fast on explicit login failure).
-#   3. Compiles AutoTrade.mq5 with MetaEditor (0 errors, 0 warnings required).
-#   4. Runs terminal64.exe headless with /config:tester.ini ([Tester] section,
+#   3. Compiles AutoTrade.mq5 + SyncHistory.mq5 with MetaEditor (0 errors,
+#      0 warnings required for both).
+#   4. Syncs XAUUSD M1 history: runs the SyncHistory script in the logged-in
+#      terminal and fails fast unless >= 50000 M1 bars arrived (run #3 proved
+#      the tester starts with 0 bars if history is not synced first).
+#   5. Runs terminal64.exe headless with /config:tester.ini ([Tester] section,
 #      ShutdownTerminal=1) - min-lot logic test on the $100 HFM demo.
-#   5. Uploads the tester report (.htm + equity chart), terminal journal logs,
+#   6. Uploads the tester report (.htm + equity chart), terminal journal logs,
 #      compile log, .set and tester.ini.template as an artifact.
 
 name: MT5 Backtest - AutoTrade EA
@@ -86,7 +96,7 @@ jobs:
           if (-not (Test-Path $editor)) { throw "MetaEditor64.exe not found at $editor after install" }
           Write-Host 'MT5 installed.'
 
-      - name: Generate tester.ini + login.ini from templates + secrets
+      - name: Generate tester.ini + login.ini + history.ini from templates + secrets
         shell: powershell
         env:
           HFM_MT5_LOGIN: ${{ secrets.HFM_MT5_LOGIN }}
@@ -126,67 +136,117 @@ jobs:
           Start-Sleep -Seconds 5
           Write-Host 'Pre-flight done.'
 
-      - name: Install EA and .set file
+      - name: Install EA, sync script and .set file
         shell: powershell
         run: |
           $experts = Join-Path $env:MT5_DIR 'MQL5\Experts'
+          $scripts = Join-Path $env:MT5_DIR 'MQL5\Scripts'
           $testerProfiles = Join-Path $env:MT5_DIR 'MQL5\Profiles\Tester'
-          New-Item -ItemType Directory -Force -Path $experts, $testerProfiles | Out-Null
+          New-Item -ItemType Directory -Force -Path $experts, $scripts, $testerProfiles | Out-Null
           Copy-Item 'ea\AutoTrade.mq5' (Join-Path $experts 'AutoTrade.mq5')
+          Copy-Item 'ea\SyncHistory.mq5' (Join-Path $scripts 'SyncHistory.mq5')
           Copy-Item 'ea\AutoTrade.set' (Join-Path $testerProfiles 'AutoTrade.set')
-          Write-Host 'EA + .set installed into the portable data folder.'
+          Write-Host 'EA + sync script + .set installed into the portable data folder.'
 
-      - name: Compile EA with MetaEditor
+      - name: Compile EA + sync script with MetaEditor
         shell: powershell
         run: |
           Set-Location $env:MT5_DIR
           $editor = Join-Path $env:MT5_DIR 'MetaEditor64.exe'
-          $src = Join-Path $env:MT5_DIR 'MQL5\Experts\AutoTrade.mq5'
-          $log = Join-Path $env:MT5_DIR 'MQL5\Experts\AutoTrade-compile.log'
-          $ex5 = Join-Path $env:MT5_DIR 'MQL5\Experts\AutoTrade.ex5'
           if (-not (Test-Path $editor)) { throw "MetaEditor64.exe not found at $editor" }
-          if (-not (Test-Path $src)) { throw "AutoTrade.mq5 not found at $src" }
-          Write-Host 'Experts dir listing:'
-          Get-ChildItem (Join-Path $env:MT5_DIR 'MQL5\Experts') | ForEach-Object { Write-Host "  $($_.Name)" }
           $outFile = Join-Path $env:RUNNER_TEMP 'metaeditor-stdout.txt'
           $errFile = Join-Path $env:RUNNER_TEMP 'metaeditor-stderr.txt'
           function Invoke-MetaEditor {
-            param([string[]]$ExtraArgs)
-            $argList = $ExtraArgs + "/compile:`"$src`"", "/log:`"$log`""
+            param([string]$Src, [string]$Log, [string[]]$ExtraArgs)
+            $argList = $ExtraArgs + "/compile:`"$Src`"", "/log:`"$Log`""
             Write-Host "Running: $editor $($argList -join ' ')"
             $p = Start-Process -FilePath $editor -ArgumentList $argList -WorkingDirectory $env:MT5_DIR -Wait -PassThru -RedirectStandardOutput $outFile -RedirectStandardError $errFile
             Write-Host "MetaEditor exit code: $($p.ExitCode) (note: MetaEditor exits 1 even on a successful compile - the log is authoritative)"
             if (Test-Path $outFile) { Write-Host '--- MetaEditor stdout ---'; Get-Content $outFile | Write-Host }
             if (Test-Path $errFile) { Write-Host '--- MetaEditor stderr ---'; Get-Content $errFile | Write-Host }
           }
-          # Attempt 1: portable mode (data folder = MT5_DIR), absolute paths.
-          Invoke-MetaEditor -ExtraArgs @('/portable')
-          if (-not (Test-Path $log)) {
-            Write-Warning 'No compile log after /portable attempt - retrying without /portable (data folder under %APPDATA%).'
-            Invoke-MetaEditor -ExtraArgs @()
+          function Compile-One {
+            param([string]$SrcRel, [string]$LogName, [string]$Ex5Rel)
+            $src = Join-Path $env:MT5_DIR $SrcRel
+            $log = Join-Path $env:MT5_DIR $LogName
+            $ex5 = Join-Path $env:MT5_DIR $Ex5Rel
+            if (-not (Test-Path $src)) { throw "$SrcRel not found at $src" }
+            # Attempt 1: portable mode (data folder = MT5_DIR), absolute paths.
+            Invoke-MetaEditor -Src $src -Log $log -ExtraArgs @('/portable')
             if (-not (Test-Path $log)) {
-              # MetaEditor without /portable writes into %APPDATA%\MetaQuotes\Terminal\<id>\MQL5\Experts - look there.
+              Write-Warning "No compile log for $SrcRel after /portable attempt - retrying without /portable (data folder under %APPDATA%)."
+              Invoke-MetaEditor -Src $src -Log $log -ExtraArgs @()
+              # MetaEditor without /portable writes into %APPDATA%\MetaQuotes\Terminal\<id> - look there.
               $appDataTerminals = Join-Path $env:APPDATA 'MetaQuotes\Terminal'
-              if (Test-Path $appDataTerminals) {
-                $foundLog = Get-ChildItem -Recurse -Filter 'AutoTrade-compile.log' $appDataTerminals -ErrorAction SilentlyContinue | Select-Object -First 1
+              if ((-not (Test-Path $log)) -and (Test-Path $appDataTerminals)) {
+                $foundLog = Get-ChildItem -Recurse -Filter ([System.IO.Path]::GetFileName($log)) $appDataTerminals -ErrorAction SilentlyContinue | Select-Object -First 1
                 if ($null -ne $foundLog) {
                   Write-Host "Found compile log at $($foundLog.FullName) - copying to $log"
                   Copy-Item $foundLog.FullName $log
                 }
-                $foundEx5 = Get-ChildItem -Recurse -Filter 'AutoTrade.ex5' $appDataTerminals -ErrorAction SilentlyContinue | Select-Object -First 1
+                $foundEx5 = Get-ChildItem -Recurse -Filter ([System.IO.Path]::GetFileName($ex5)) $appDataTerminals -ErrorAction SilentlyContinue | Select-Object -First 1
                 if ($null -ne $foundEx5) {
-                  Write-Host "Found AutoTrade.ex5 at $($foundEx5.FullName) - copying to $ex5"
+                  Write-Host "Found compiled file at $($foundEx5.FullName) - copying to $ex5"
                   Copy-Item $foundEx5.FullName $ex5
                 }
               }
             }
+            if (-not (Test-Path $log)) { throw "Compile log not produced for $SrcRel - MetaEditor did not run. See captured stdout/stderr above." }
+            $text = Get-Content -Raw -Path $log
+            Write-Host $text
+            if ($text -notmatch '0 errors, 0 warnings') { throw "$SrcRel compile did not report 0 errors, 0 warnings. See log above." }
+            if (-not (Test-Path $ex5)) { throw "$Ex5Rel missing after compile." }
+            Write-Host "$SrcRel compiled clean: 0 errors, 0 warnings."
           }
-          if (-not (Test-Path $log)) { throw 'Compile log not produced - MetaEditor did not run. See captured stdout/stderr above.' }
-          $text = Get-Content -Raw -Path $log
-          Write-Host $text
-          if ($text -notmatch '0 errors, 0 warnings') { throw 'EA compile did not report 0 errors, 0 warnings. See log above.' }
-          if (-not (Test-Path $ex5)) { throw 'AutoTrade.ex5 missing after compile.' }
-          Write-Host 'EA compiled clean: 0 errors, 0 warnings.'
+          Compile-One -SrcRel 'MQL5\Experts\AutoTrade.mq5' -LogName 'MQL5\Experts\AutoTrade-compile.log' -Ex5Rel 'MQL5\Experts\AutoTrade.ex5'
+          Compile-One -SrcRel 'MQL5\Scripts\SyncHistory.mq5' -LogName 'MQL5\Scripts\SyncHistory-compile.log' -Ex5Rel 'MQL5\Scripts\SyncHistory.ex5'
+
+      - name: Sync XAUUSD history (login + download before tester)
+        shell: powershell
+        timeout-minutes: 15
+        run: |
+          Set-Location $env:MT5_DIR
+          $scriptEx5 = Join-Path $env:MT5_DIR 'MQL5\Scripts\SyncHistory.ex5'
+          $historyIni = Join-Path $env:MT5_DIR 'history.ini'
+          if (-not (Test-Path $scriptEx5)) { throw 'SyncHistory.ex5 missing - compile step did not produce it.' }
+          if (-not (Test-Path $historyIni)) { throw 'history.ini missing - config step did not produce it.' }
+          $resultFile = Join-Path $env:MT5_DIR 'MQL5\Files\sync-result.txt'
+          if (Test-Path $resultFile) { Remove-Item $resultFile -Force }
+          $proc = Start-Process -FilePath (Join-Path $env:MT5_DIR 'terminal64.exe') -ArgumentList '/portable','/config:history.ini' -WorkingDirectory $env:MT5_DIR -PassThru
+          Write-Host "Terminal started for history sync (PID $($proc.Id)). Waiting up to 600s for sync-result.txt..."
+          $deadline = (Get-Date).AddSeconds(600)
+          $found = $false
+          while ((Get-Date) -lt $deadline) {
+            if (Test-Path $resultFile) { $found = $true; break }
+            if ($proc.HasExited) { break }
+            Start-Sleep -Seconds 15
+          }
+          Stop-Process -Id $proc.Id -Force -ErrorAction SilentlyContinue
+          Start-Sleep -Seconds 5
+          if (-not $found) {
+            Write-Host '--- journal tail (every log location) ---'
+            $logsDirs = @((Join-Path $env:MT5_DIR 'Logs'))
+            $appDataTerminals = Join-Path $env:APPDATA 'MetaQuotes\Terminal'
+            if (Test-Path $appDataTerminals) { $logsDirs += Get-ChildItem $appDataTerminals -Directory | ForEach-Object { Join-Path $_.FullName 'Logs' } }
+            foreach ($ld in $logsDirs) {
+              if (Test-Path $ld) {
+                Get-ChildItem $ld -Filter '*.log' | Sort-Object LastWriteTime -Descending | Select-Object -First 2 | ForEach-Object {
+                  Write-Host "== $($_.FullName) =="
+                  Get-Content -Tail 20 $_.FullName -ErrorAction SilentlyContinue | Write-Host
+                }
+              }
+            }
+            throw 'History sync did not produce sync-result.txt within 600s - the SyncHistory script did not run (check the [Experts] Script key in history.ini) or the terminal never logged in. See journal tail above.'
+          }
+          $content = Get-Content -Raw -Path $resultFile
+          Write-Host $content
+          $bars = 0
+          $connected = 0
+          if ($content -match 'M1_BARS=(-?\d+)') { $bars = [int]$Matches[1] }
+          if ($content -match 'TERMINAL_CONNECTED=(\d+)') { $connected = [int]$Matches[1] }
+          if ($connected -ne 1) { throw 'History sync: terminal NOT connected to the HFM server (TERMINAL_CONNECTED=0). Check the HFM_MT5_SERVER secret - the server name is unverified.' }
+          if ($bars -lt 50000) { throw "History sync: only $bars M1 bars for XAUUSD (need at least 50000 for the Aug-Oct window). History did not download - check the journal in the artifact." }
+          Write-Host "History sync OK: $bars M1 bars for XAUUSD, terminal connected."
 
       - name: Run Strategy Tester (headless)
         shell: powershell
