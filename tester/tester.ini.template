@@ -1,0 +1,31 @@
+; AutoTrade EA — Strategy Tester config (TEMPLATE)
+; Generated at runtime by scripts/prepare-tester-config.ps1 from GitHub Secrets.
+; NEVER commit a filled-in copy: __HFM_PASSWORD__ must stay a secret.
+;
+; Placeholders: __HFM_LOGIN__ __HFM_PASSWORD__ __HFM_SERVER__
+;               __FROM_DATE__ __TO_DATE__ __MODEL__ __DEPOSIT__
+; (from_date/to_date/model/deposit come from the workflow_dispatch inputs.)
+
+[Common]
+Login=__HFM_LOGIN__
+Password=__HFM_PASSWORD__
+Server=__HFM_SERVER__
+
+[Tester]
+Expert=AutoTrade.ex5
+ExpertParameters=AutoTrade.set
+Symbol=XAUUSD
+Period=H1
+Model=__MODEL__
+FromDate=__FROM_DATE__
+ToDate=__TO_DATE__
+ForwardMode=0
+Deposit=__DEPOSIT__
+Currency=USD
+Leverage=2000
+Optimization=0
+OptimizationCriterion=0
+Report=AutoTrade-Backtest
+ReplaceReport=1
+ShutdownTerminal=1
+Visual=0
