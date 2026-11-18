@@ -1,0 +1,7 @@
+; Minimal login-only config for the pre-flight broker-login check.
+; Generated at runtime by scripts/prepare-tester-config.ps1 from GitHub Secrets.
+; NEVER commit a filled-in copy: __HFM_PASSWORD__ must stay a secret.
+[Common]
+Login=__HFM_LOGIN__
+Password=__HFM_PASSWORD__
+Server=__HFM_SERVER__
