@@ -29,6 +29,17 @@
 # the account into the terminal data folder), the pre-flight becomes a hard
 # gate (fails unless a login marker appears in the journal within 600s),
 # and the sync step polls the journal while waiting.
+# Run #5 (2026-11-18) FAILED at the new seed step: mt5.initialize() gave
+# IPC timeout (-10005) after 300s - the Python package could not connect to
+# the terminal at all, so the HFM login was never attempted (password still
+# untested; the server name is already verified correct from prince's HFM
+# app screenshot). The journal shows the terminal was busy with first-run
+# recompilation (131 files) + a 71 MB LiveUpdate download when initialize
+# was called; recompilation finished at 12:36:18 UTC but IPC stayed dead
+# until the timeout - likely the terminal restarted to apply the update.
+# FIX #5: a warm-up step runs the terminal once for 300s first so first-run
+# setup finishes before the seed step, and seed_login.py retries
+# initialize() up to 3 times with 60s gaps.
 #
 # No credentials live in this repo. The demo login/password/server come from
 # GitHub Secrets (HFM_MT5_LOGIN / HFM_MT5_PASSWORD / HFM_MT5_SERVER) and are
@@ -39,19 +50,22 @@
 #   1. Installs MT5 silently on a windows-latest runner (direct internet, so
 #      the terminal can reach the HFM server and sync history - the thing the
 #      local VM could not do).
-#   2. Seeds the broker login once via the MetaTrader5 Python package (run #4
+#   2. Warms up the terminal once (300s) so first-run recompilation +
+#      LiveUpdate finish before anything tries to connect (run #5 proved
+#      initialize() times out while the terminal is still busy with them).
+#   3. Seeds the broker login once via the MetaTrader5 Python package (run #4
 #      proved the terminal never logs in from /config: ini files on a fresh
 #      runner - the package login saves the account into the data folder).
-#   3. Pre-flight broker-login check (hard gate - fails unless a login marker
+#   4. Pre-flight broker-login check (hard gate - fails unless a login marker
 #      appears in the journal within 600s).
-#   4. Compiles AutoTrade.mq5 + SyncHistory.mq5 with MetaEditor (0 errors,
+#   5. Compiles AutoTrade.mq5 + SyncHistory.mq5 with MetaEditor (0 errors,
 #      0 warnings required for both).
-#   5. Syncs XAUUSD M1 history: runs the SyncHistory script in the logged-in
+#   6. Syncs XAUUSD M1 history: runs the SyncHistory script in the logged-in
 #      terminal and fails fast unless >= 50000 M1 bars arrived (run #3 proved
 #      the tester starts with 0 bars if history is not synced first).
-#   6. Runs terminal64.exe headless with /config:tester.ini ([Tester] section,
+#   7. Runs terminal64.exe headless with /config:tester.ini ([Tester] section,
 #      ShutdownTerminal=1) - min-lot logic test on the $100 HFM demo.
-#   7. Uploads the tester report (.htm + equity chart), terminal journal logs,
+#   8. Uploads the tester report (.htm + equity chart), terminal journal logs,
 #      compile log, .set and tester.ini.template as an artifact.
 
 name: MT5 Backtest - AutoTrade EA
@@ -125,9 +139,22 @@ jobs:
           BT_DEPOSIT: ${{ inputs.deposit }}
         run: .\scripts\prepare-tester-config.ps1
 
+      - name: Warm up terminal (let first-run setup finish)
+        shell: powershell
+        timeout-minutes: 10
+        run: |
+          Set-Location $env:MT5_DIR
+          $proc = Start-Process -FilePath (Join-Path $env:MT5_DIR 'terminal64.exe') -ArgumentList '/portable','/config:login.ini' -WorkingDirectory $env:MT5_DIR -PassThru
+          Write-Host "Warm-up terminal started (PID $($proc.Id)). Waiting 300s for first-run recompilation + LiveUpdate to finish..."
+          Start-Sleep -Seconds 300
+          Stop-Process -Id $proc.Id -Force -ErrorAction SilentlyContinue
+          if (-not $proc.WaitForExit(60000)) { Write-Warning 'Warm-up terminal did not exit within 60s after stop.' }
+          Start-Sleep -Seconds 10
+          Write-Host 'Warm-up done - first-run setup should be complete.'
+
       - name: Seed broker login via MetaTrader5 Python
         shell: powershell
-        timeout-minutes: 15
+        timeout-minutes: 30
         env:
           HFM_MT5_LOGIN: ${{ secrets.HFM_MT5_LOGIN }}
           HFM_MT5_PASSWORD: ${{ secrets.HFM_MT5_PASSWORD }}
