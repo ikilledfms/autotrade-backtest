@@ -1,7 +1,10 @@
 # MT5 Strategy Tester backtest — AutoTrade EA (one-off, manual trigger)
 #
-# Status: UNTESTED end-to-end. The first run is a shakedown: expect to iterate
-# on login/config issues using the uploaded journal logs.
+# Status: run #1 (2026-11-18) FAILED at the compile step — MetaEditor did not
+# run (no compile log produced; not an EA syntax error, and the pre-flight
+# broker login passed, so the Secrets are correct). The compile step now uses
+# absolute paths, captures MetaEditor stdout/stderr + exit code, and retries
+# without /portable with an %APPDATA% fallback for the log/.ex5.
 #
 # No credentials live in this repo. The demo login/password/server come from
 # GitHub Secrets (HFM_MT5_LOGIN / HFM_MT5_PASSWORD / HFM_MT5_SERVER) and are
@@ -132,14 +135,52 @@ jobs:
         shell: powershell
         run: |
           Set-Location $env:MT5_DIR
-          # MetaEditor exits 1 even on a successful compile — the log is authoritative.
-          & .\MetaEditor64.exe /portable /compile:"MQL5\Experts\AutoTrade.mq5" /log:"MQL5\Experts\AutoTrade-compile.log"
+          $editor = Join-Path $env:MT5_DIR 'MetaEditor64.exe'
+          $src = Join-Path $env:MT5_DIR 'MQL5\Experts\AutoTrade.mq5'
           $log = Join-Path $env:MT5_DIR 'MQL5\Experts\AutoTrade-compile.log'
-          if (-not (Test-Path $log)) { throw 'Compile log not produced — MetaEditor did not run.' }
+          $ex5 = Join-Path $env:MT5_DIR 'MQL5\Experts\AutoTrade.ex5'
+          if (-not (Test-Path $editor)) { throw "MetaEditor64.exe not found at $editor" }
+          if (-not (Test-Path $src)) { throw "AutoTrade.mq5 not found at $src" }
+          Write-Host 'Experts dir listing:'
+          Get-ChildItem (Join-Path $env:MT5_DIR 'MQL5\Experts') | ForEach-Object { Write-Host "  $($_.Name)" }
+          $outFile = Join-Path $env:RUNNER_TEMP 'metaeditor-stdout.txt'
+          $errFile = Join-Path $env:RUNNER_TEMP 'metaeditor-stderr.txt'
+          function Invoke-MetaEditor {
+            param([string[]]$ExtraArgs)
+            $argList = $ExtraArgs + "/compile:`"$src`"", "/log:`"$log`""
+            Write-Host "Running: $editor $($argList -join ' ')"
+            $p = Start-Process -FilePath $editor -ArgumentList $argList -WorkingDirectory $env:MT5_DIR -Wait -PassThru -RedirectStandardOutput $outFile -RedirectStandardError $errFile
+            Write-Host "MetaEditor exit code: $($p.ExitCode) (note: MetaEditor exits 1 even on a successful compile — the log is authoritative)"
+            if (Test-Path $outFile) { Write-Host '--- MetaEditor stdout ---'; Get-Content $outFile | Write-Host }
+            if (Test-Path $errFile) { Write-Host '--- MetaEditor stderr ---'; Get-Content $errFile | Write-Host }
+          }
+          # Attempt 1: portable mode (data folder = MT5_DIR), absolute paths.
+          Invoke-MetaEditor -ExtraArgs @('/portable')
+          if (-not (Test-Path $log)) {
+            Write-Warning 'No compile log after /portable attempt — retrying without /portable (data folder under %APPDATA%).'
+            Invoke-MetaEditor -ExtraArgs @()
+            if (-not (Test-Path $log)) {
+              # MetaEditor without /portable writes into %APPDATA%\MetaQuotes\Terminal\<id>\MQL5\Experts — look there.
+              $appDataTerminals = Join-Path $env:APPDATA 'MetaQuotes\Terminal'
+              if (Test-Path $appDataTerminals) {
+                $foundLog = Get-ChildItem -Recurse -Filter 'AutoTrade-compile.log' $appDataTerminals -ErrorAction SilentlyContinue | Select-Object -First 1
+                if ($null -ne $foundLog) {
+                  Write-Host "Found compile log at $($foundLog.FullName) — copying to $log"
+                  Copy-Item $foundLog.FullName $log
+                }
+                $foundEx5 = Get-ChildItem -Recurse -Filter 'AutoTrade.ex5' $appDataTerminals -ErrorAction SilentlyContinue | Select-Object -First 1
+                if ($null -ne $foundEx5) {
+                  Write-Host "Found AutoTrade.ex5 at $($foundEx5.FullName) — copying to $ex5"
+                  Copy-Item $foundEx5.FullName $ex5
+                }
+              }
+            }
+          }
+          if (-not (Test-Path $log)) { throw 'Compile log not produced — MetaEditor did not run. See captured stdout/stderr above.' }
           $text = Get-Content -Raw -Path $log
           Write-Host $text
           if ($text -notmatch '0 errors, 0 warnings') { throw 'EA compile did not report 0 errors, 0 warnings. See log above.' }
-          if (-not (Test-Path (Join-Path $env:MT5_DIR 'MQL5\Experts\AutoTrade.ex5'))) { throw 'AutoTrade.ex5 missing after compile.' }
+          if (-not (Test-Path $ex5)) { throw 'AutoTrade.ex5 missing after compile.' }
           Write-Host 'EA compiled clean: 0 errors, 0 warnings.'
 
       - name: Run Strategy Tester (headless)
