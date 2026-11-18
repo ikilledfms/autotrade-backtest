@@ -1,16 +1,19 @@
 # Backtest AutoTrade EA via GitHub Actions
 
-**Status: run #3 SUCCESS tapi backtest KOSONG (0 trade).** EA compile bersih
-(0 errors, 0 warnings) sejak perbaikan commit 37ba6b9, tapi Strategy Tester
-jalan tanpa histori sama sekali (Bars 0, Ticks 0, History Quality 0%, Initial
-Deposit 0.00, Leverage 1:100, Symbols 0) — terminal tester tidak login dan
-tidak ada histori yang tersinkron sebelum tester jalan. **Perbaikan run #4:**
-step baru "Sync XAUUSD history" menjalankan script `ea/SyncHistory.mq5`
-sebelum tester — script itu login, memaksa unduh histori M1 XAUUSD
-(2026.08.01–2026.10.19) via CopyRates, dan menulis
-`MQL5\Files\sync-result.txt`; step gagal cepat kalau terminal tidak
-terhubung atau bar M1 < 50000. Jangan anggap jalur ini sudah terbukti sampai
-satu run menghasilkan laporan `.htm` dengan trade > 0.
+**Status: run #4 FAILED at the history-sync step (18 Nov ~18:11 WIB).**
+SyncHistory.mq5 compiled clean (0 errors, 0 warnings) but never ran:
+sync-result.txt was never created — the pre-flight terminal spent its 120s
+on first-run recompilation + LiveUpdate and never logged in, and the sync
+terminal wrote only startup lines then total silence for 10 min. Prince
+verified the server name from the HFM app (HFMarketsGlobal-Demo 4, login
+235368272) — the secret is CORRECT; the terminal simply never attempts a
+login from `/config:` ini files on a fresh runner (no saved session exists
+yet). **Perbaikan run #5:** step baru "Seed broker login via MetaTrader5
+Python" (`scripts/seed_login.py`) logs in once through the terminal's own
+API, which saves the account into the data folder; pre-flight becomes a
+hard gate (fails unless a login marker appears in the journal within 600s);
+sync step polls the journal while waiting. Jangan anggap jalur ini sudah
+terbukti sampai satu run menghasilkan laporan `.htm` dengan trade > 0.
 
 ## Kenapa jalur ini
 
@@ -62,6 +65,7 @@ tapi tidak direkomendasikan.
    tester/login.ini.template
    scripts/prepare-tester-config.ps1
    scripts/collect-results.ps1
+   scripts/seed_login.py
    README.md
    ```
    Jangan push apa pun lagi (terutama jangan push file berisi kredensial).
@@ -72,7 +76,7 @@ tapi tidak direkomendasikan.
    |---|---|---|
    | `HFM_MT5_LOGIN` | Nomor akun demo MT5 HFM (akun Premium $100 yang terverifikasi 16 Nov) | Aplikasi/portal HFM |
    | `HFM_MT5_PASSWORD` | Password trading akun demo itu | Sama — **jangan pernah ditempel di chat/file** |
-   | `HFM_MT5_SERVER` | Nama server demo HFM persis seperti di aplikasi HFM | ⚠️ Diyakini `HFMarketsGlobal-Demo 4`, tapi **BELUM terverifikasi ulang** — cek persis di aplikasi HFM sebelum diisi |
+   | `HFM_MT5_SERVER` | Nama server demo HFM persis seperti di aplikasi HFM | ✅ Terverifikasi benar: `HFMarketsGlobal-Demo 4` (screenshot aplikasi HFM prince, 18 Nov 19:21 WIB) |
 
 4. **Jalankan:** repo → Actions → "MT5 Backtest — AutoTrade EA" → Run workflow.
    Input bisa diubah per run (tanggal, model, deposit); default-nya sudah benar
@@ -107,11 +111,15 @@ TIDAK trading live dan tidak bisa menyentuh dana real.**
   file di folder install, collect step juga memeriksa folder `%APPDATA%` —
   dan README ini harus di-update dari hasil run pertama.
 - **`[Common] Password` di `tester.ini`:** login+server via `[Common]` sudah
-  terverifikasi di VM (tanpa password, sesi tersimpan dipakai ulang); di runner
-  baru tidak ada sesi tersimpan, jadi password dari Secret harus ikut terbaca.
-  Bila login gagal, pre-flight step gagal cepat (fail-fast) dan journal
-  menunjukkan penyebabnya.
-- **Nama server belum terverifikasi** (lihat tabel Secrets di atas).
+  terverifikasi di VM (tanpa password, sesi tersimpan dipakai ulang). Di runner
+  baru tidak ada sesi tersimpan — dan run #4 membuktikan password di ini
+  TIDAK dipakai untuk membuat sesi baru: terminal tidak pernah mencoba login
+  sama sekali (tidak ada baris login di jurnal, tidak ada marker gagal).
+  **Perbaikan run #5:** step seed login via paket Python MetaTrader5 membuat
+  sesi tersimpan dulu; pre-flight jadi hard gate yang memverifikasi login
+  dari jurnal sebelum lanjut.
+- **Nama server TERVERIFIKASI benar** — `HFMarketsGlobal-Demo 4`, dari
+  screenshot aplikasi HFM prince (18 Nov 19:21 WIB).
 - **Leverage di INI diabaikan tester** — yang dipakai adalah leverage akun
   (1:2000). Sudah dicatat dari smoke test VM, bukan blocker.
 - **Kalender ekonomi tidak ada di tester; `InpManualNews` default (Des 2026–
@@ -123,9 +131,11 @@ TIDAK trading live dan tidak bisa menyentuh dana real.**
 - **Model 1 (OHLC M1), bukan real ticks** — memadai untuk uji logika EA H1;
   untuk validasi akhir bisa re-run dengan Model 0/4 (lebih lambat, butuh unduh
   tick).
-- **Dialog first-run:** bila login gagal, terminal bisa berhenti di dialog
-  "Open an Account" sampai timeout 270 mnt; journal di artifact menunjukkan
-  penyebabnya.
+- **Dialog first-run:** run #4 menunjukkan terminal baru bisa diam total
+  (tidak ada percobaan login) sampai timeout — kemungkinan terjebak di dialog
+  "Open an Account". Step seed login (run #5) dibuat untuk melewati ini
+  dengan login lewat API terminal; bila pre-flight hard gate tetap gagal,
+  journal di artifact menunjukkan penyebabnya.
 - **Sintaks PowerShell belum divalidasi lokal** (tidak ada PowerShell di VM ini)
   — ditulis hati-hati dan di-review baris-per-baris; bila step PowerShell
   error, log-nya yang dibaca dulu.
