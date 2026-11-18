@@ -1,0 +1,171 @@
+# MT5 Strategy Tester backtest — AutoTrade EA (one-off, manual trigger)
+#
+# Status: UNTESTED end-to-end. The first run is a shakedown: expect to iterate
+# on login/config issues using the uploaded journal logs.
+#
+# No credentials live in this repo. The demo login/password/server come from
+# GitHub Secrets (HFM_MT5_LOGIN / HFM_MT5_PASSWORD / HFM_MT5_SERVER) and are
+# injected into tester.ini on the runner only. The generated tester.ini and
+# login.ini are NEVER uploaded as artifacts.
+#
+# What it does:
+#   1. Installs MT5 silently on a windows-latest runner (direct internet, so
+#      the terminal can reach the HFM server and sync history — the thing the
+#      local VM could not do).
+#   2. Pre-flight broker-login check (fails fast on explicit login failure).
+#   3. Compiles AutoTrade.mq5 with MetaEditor (0 errors, 0 warnings required).
+#   4. Runs terminal64.exe headless with /config:tester.ini ([Tester] section,
+#      ShutdownTerminal=1) — min-lot logic test on the $100 HFM demo.
+#   5. Uploads the tester report (.htm + equity chart), terminal journal logs,
+#      compile log, .set and tester.ini.template as an artifact.
+
+name: MT5 Backtest — AutoTrade EA
+
+run-name: Backtest AutoTrade ${{ inputs.from_date }} → ${{ inputs.to_date }} (Model ${{ inputs.model }})
+
+on:
+  workflow_dispatch:
+    inputs:
+      from_date:
+        description: 'Backtest start date (YYYY.MM.DD)'
+        required: true
+        default: '2026.08.03'
+      to_date:
+        description: 'Backtest end date (YYYY.MM.DD)'
+        required: true
+        default: '2026.10.16'
+      model:
+        description: 'Modeling: 1 = 1-minute OHLC (fast, right for an H1 EA), 0 = every tick, 4 = real ticks'
+        required: true
+        default: '1'
+      deposit:
+        description: 'Tester deposit in USD (prince decision 16 Nov: 100 = min-lot logic test)'
+        required: true
+        default: '100'
+
+permissions:
+  contents: read
+
+jobs:
+  backtest:
+    runs-on: windows-latest
+    timeout-minutes: 360  # GitHub job cap is 6h; the tester step below caps at 300 min
+    env:
+      MT5_DIR: 'C:\Program Files\MetaTrader 5'
+
+    steps:
+      - name: Check out repo
+        uses: actions/checkout@v4
+
+      - name: Download MT5 installer (MetaQuotes)
+        shell: powershell
+        run: |
+          $url = 'https://download.mql5.com/cdn/web/metaquotes.software.corp/mt5/mt5setup.exe'
+          $out = Join-Path $env:RUNNER_TEMP 'mt5setup.exe'
+          Invoke-WebRequest -Uri $url -OutFile $out
+          $size = (Get-Item $out).Length
+          if ($size -lt 10MB) { throw "Installer download looks incomplete: $size bytes" }
+          Write-Host "Installer downloaded: $size bytes"
+
+      - name: Install MT5 silently
+        shell: powershell
+        run: |
+          $setup = Join-Path $env:RUNNER_TEMP 'mt5setup.exe'
+          Start-Process -FilePath $setup -ArgumentList '/auto' -Wait
+          $terminal = Join-Path $env:MT5_DIR 'terminal64.exe'
+          $editor = Join-Path $env:MT5_DIR 'MetaEditor64.exe'
+          if (-not (Test-Path $terminal)) { throw "terminal64.exe not found at $terminal after install" }
+          if (-not (Test-Path $editor)) { throw "MetaEditor64.exe not found at $editor after install" }
+          Write-Host 'MT5 installed.'
+
+      - name: Generate tester.ini + login.ini from templates + secrets
+        shell: powershell
+        env:
+          HFM_MT5_LOGIN: ${{ secrets.HFM_MT5_LOGIN }}
+          HFM_MT5_PASSWORD: ${{ secrets.HFM_MT5_PASSWORD }}
+          HFM_MT5_SERVER: ${{ secrets.HFM_MT5_SERVER }}
+          BT_FROM_DATE: ${{ inputs.from_date }}
+          BT_TO_DATE: ${{ inputs.to_date }}
+          BT_MODEL: ${{ inputs.model }}
+          BT_DEPOSIT: ${{ inputs.deposit }}
+        run: .\scripts\prepare-tester-config.ps1
+
+      - name: Pre-flight broker-login check (fail fast on bad login)
+        shell: powershell
+        run: |
+          Set-Location $env:MT5_DIR
+          $proc = Start-Process -FilePath (Join-Path $env:MT5_DIR 'terminal64.exe') -ArgumentList '/portable','/config:login.ini' -WorkingDirectory $env:MT5_DIR -PassThru
+          Write-Host "Terminal started for login check (PID $($proc.Id)). Waiting 120s..."
+          Start-Sleep -Seconds 120
+          $journal = ''
+          $logsDir = Join-Path $env:MT5_DIR 'Logs'
+          if (Test-Path $logsDir) {
+            $logFile = Get-ChildItem $logsDir -Filter '*.log' | Sort-Object LastWriteTime -Descending | Select-Object -First 1
+            if ($null -ne $logFile) { $journal = Get-Content -Raw -Path $logFile.FullName }
+          }
+          # Explicit trade-login failure markers. NOTE: 'MQL5.community authorization
+          # failed' is a harmless periodic line — it is deliberately NOT matched here.
+          if ($journal -match 'login failed|invalid account|no connection|cannot connect|account disabled') {
+            Stop-Process -Id $proc.Id -Force -ErrorAction SilentlyContinue
+            throw 'Broker login failed (see journal excerpt in the step log). Check HFM_MT5_LOGIN / HFM_MT5_PASSWORD / HFM_MT5_SERVER secrets.'
+          }
+          if ($journal -match 'login on|connected to') {
+            Write-Host 'Login looks good (journal shows login/connected).'
+          } else {
+            Write-Warning 'No conclusive login marker in the journal after 120s — proceeding anyway; the tester run is the real test.'
+          }
+          Stop-Process -Id $proc.Id -Force -ErrorAction SilentlyContinue
+          Start-Sleep -Seconds 5
+          Write-Host 'Pre-flight done.'
+
+      - name: Install EA and .set file
+        shell: powershell
+        run: |
+          $experts = Join-Path $env:MT5_DIR 'MQL5\Experts'
+          $testerProfiles = Join-Path $env:MT5_DIR 'MQL5\Profiles\Tester'
+          New-Item -ItemType Directory -Force -Path $experts, $testerProfiles | Out-Null
+          Copy-Item 'ea\AutoTrade.mq5' (Join-Path $experts 'AutoTrade.mq5')
+          Copy-Item 'ea\AutoTrade.set' (Join-Path $testerProfiles 'AutoTrade.set')
+          Write-Host 'EA + .set installed into the portable data folder.'
+
+      - name: Compile EA with MetaEditor
+        shell: powershell
+        run: |
+          Set-Location $env:MT5_DIR
+          # MetaEditor exits 1 even on a successful compile — the log is authoritative.
+          & .\MetaEditor64.exe /portable /compile:"MQL5\Experts\AutoTrade.mq5" /log:"MQL5\Experts\AutoTrade-compile.log"
+          $log = Join-Path $env:MT5_DIR 'MQL5\Experts\AutoTrade-compile.log'
+          if (-not (Test-Path $log)) { throw 'Compile log not produced — MetaEditor did not run.' }
+          $text = Get-Content -Raw -Path $log
+          Write-Host $text
+          if ($text -notmatch '0 errors, 0 warnings') { throw 'EA compile did not report 0 errors, 0 warnings. See log above.' }
+          if (-not (Test-Path (Join-Path $env:MT5_DIR 'MQL5\Experts\AutoTrade.ex5'))) { throw 'AutoTrade.ex5 missing after compile.' }
+          Write-Host 'EA compiled clean: 0 errors, 0 warnings.'
+
+      - name: Run Strategy Tester (headless)
+        shell: powershell
+        timeout-minutes: 300
+        run: |
+          Set-Location $env:MT5_DIR
+          $proc = Start-Process -FilePath (Join-Path $env:MT5_DIR 'terminal64.exe') -ArgumentList '/portable','/config:tester.ini' -WorkingDirectory $env:MT5_DIR -PassThru
+          Write-Host "Terminal started (PID $($proc.Id)). Waiting up to 270 minutes for ShutdownTerminal=1 to close it..."
+          if (-not $proc.WaitForExit(270 * 60 * 1000)) {
+            Write-Warning 'Tester did not exit within 270 minutes — stopping terminal.'
+            $proc.Kill()
+            throw 'Strategy Tester timed out (270 min). Journal logs are collected below for diagnosis.'
+          }
+          Write-Host "Terminal exited with code $($proc.ExitCode)."
+
+      - name: Collect results
+        if: always()
+        shell: powershell
+        run: .\scripts\collect-results.ps1
+
+      - name: Upload backtest results
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: mt5-backtest-results
+          path: results/
+          if-no-files-found: warn
+          retention-days: 30
