@@ -1,5 +1,10 @@
-# prepare-tester-config.ps1 — generate tester.ini + login.ini from templates
-# using GitHub Secrets (never committed, never printed).
+# prepare-tester-config.ps1 - generate tester.ini + login.ini + history.ini
+# from templates using GitHub Secrets (never committed, never printed).
+#
+# history.ini = login.ini + an [Experts] Script=SyncHistory section: it logs
+# the terminal in and runs the SyncHistory script once so XAUUSD M1 history
+# is downloaded BEFORE the Strategy Tester starts (run #3 produced 0 bars
+# because the tester started with no history synced).
 #
 # Required env vars (set by the workflow from secrets / dispatch inputs):
 #   HFM_MT5_LOGIN, HFM_MT5_PASSWORD, HFM_MT5_SERVER
@@ -52,4 +57,7 @@ $loginFilled = $loginTemplate.Replace('__HFM_LOGIN__', $login).
 if ($loginFilled -match '__[A-Z_]+__') { throw 'Unresolved placeholder remains in login.ini.' }
 Set-Content -Path (Join-Path $OutputDir 'login.ini') -Value $loginFilled -Encoding UTF8
 
-Write-Host 'tester.ini and login.ini generated in the MT5 folder (contents not printed).'
+$historyFilled = $loginFilled + "`n[Experts]`nScript=SyncHistory`n"
+Set-Content -Path (Join-Path $OutputDir 'history.ini') -Value $historyFilled -Encoding UTF8
+
+Write-Host 'tester.ini, login.ini and history.ini generated in the MT5 folder (contents not printed).'
