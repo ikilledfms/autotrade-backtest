@@ -16,6 +16,19 @@
 # it logs in, force-downloads XAUUSD M1 history for 2026.08.01-2026.10.19
 # via CopyRates, and writes MQL5\Files\sync-result.txt; the step fails fast
 # unless the terminal is connected and >= 50000 M1 bars arrived.
+# Run #4 (2026-11-18) FAILED at the sync step: step 9 timed out after 600s -
+# sync-result.txt was never created. The script compiled clean but never ran:
+# the pre-flight terminal spent its 120s on first-run recompilation +
+# LiveUpdate and never logged in, and the sync terminal wrote only startup
+# lines then total silence for 10 min. Prince verified the server name from
+# the HFM app (HFMarketsGlobal-Demo 4, login 235368272) - the secret is
+# CORRECT. Root cause: on a fresh runner the terminal never attempts a login
+# from the [Common] section of /config: ini files (no saved session exists
+# yet, and the password in the ini is not used to create one). FIX #4: a new
+# seed step logs in once via the MetaTrader5 Python package (its login saves
+# the account into the terminal data folder), the pre-flight becomes a hard
+# gate (fails unless a login marker appears in the journal within 600s),
+# and the sync step polls the journal while waiting.
 #
 # No credentials live in this repo. The demo login/password/server come from
 # GitHub Secrets (HFM_MT5_LOGIN / HFM_MT5_PASSWORD / HFM_MT5_SERVER) and are
@@ -26,15 +39,19 @@
 #   1. Installs MT5 silently on a windows-latest runner (direct internet, so
 #      the terminal can reach the HFM server and sync history - the thing the
 #      local VM could not do).
-#   2. Pre-flight broker-login check (fails fast on explicit login failure).
-#   3. Compiles AutoTrade.mq5 + SyncHistory.mq5 with MetaEditor (0 errors,
+#   2. Seeds the broker login once via the MetaTrader5 Python package (run #4
+#      proved the terminal never logs in from /config: ini files on a fresh
+#      runner - the package login saves the account into the data folder).
+#   3. Pre-flight broker-login check (hard gate - fails unless a login marker
+#      appears in the journal within 600s).
+#   4. Compiles AutoTrade.mq5 + SyncHistory.mq5 with MetaEditor (0 errors,
 #      0 warnings required for both).
-#   4. Syncs XAUUSD M1 history: runs the SyncHistory script in the logged-in
+#   5. Syncs XAUUSD M1 history: runs the SyncHistory script in the logged-in
 #      terminal and fails fast unless >= 50000 M1 bars arrived (run #3 proved
 #      the tester starts with 0 bars if history is not synced first).
-#   5. Runs terminal64.exe headless with /config:tester.ini ([Tester] section,
+#   6. Runs terminal64.exe headless with /config:tester.ini ([Tester] section,
 #      ShutdownTerminal=1) - min-lot logic test on the $100 HFM demo.
-#   6. Uploads the tester report (.htm + equity chart), terminal journal logs,
+#   7. Uploads the tester report (.htm + equity chart), terminal journal logs,
 #      compile log, .set and tester.ini.template as an artifact.
 
 name: MT5 Backtest - AutoTrade EA
@@ -108,33 +125,71 @@ jobs:
           BT_DEPOSIT: ${{ inputs.deposit }}
         run: .\scripts\prepare-tester-config.ps1
 
-      - name: Pre-flight broker-login check (fail fast on bad login)
+      - name: Seed broker login via MetaTrader5 Python
         shell: powershell
+        timeout-minutes: 15
+        env:
+          HFM_MT5_LOGIN: ${{ secrets.HFM_MT5_LOGIN }}
+          HFM_MT5_PASSWORD: ${{ secrets.HFM_MT5_PASSWORD }}
+          HFM_MT5_SERVER: ${{ secrets.HFM_MT5_SERVER }}
+        run: |
+          python -m pip install --quiet MetaTrader5
+          if ($LASTEXITCODE -ne 0) { throw 'pip install MetaTrader5 failed.' }
+          python scripts\seed_login.py
+          if ($LASTEXITCODE -ne 0) { throw 'Seed login failed - the terminal could not log in to HFM. See the script output above.' }
+          Write-Host 'Waiting for any terminal64.exe process to exit (lock release)...'
+          $deadline = (Get-Date).AddSeconds(60)
+          while ((Get-Date) -lt $deadline) {
+            $running = Get-Process terminal64 -ErrorAction SilentlyContinue
+            if ($null -eq $running) { break }
+            Start-Sleep -Seconds 5
+          }
+          if ($null -ne (Get-Process terminal64 -ErrorAction SilentlyContinue)) {
+            Write-Warning 'terminal64.exe still running after seed shutdown - stopping it.'
+            Stop-Process -Name terminal64 -Force -ErrorAction SilentlyContinue
+            Start-Sleep -Seconds 10
+          }
+          Write-Host 'Seed login done.'
+
+      - name: Pre-flight broker-login check (hard gate - must see a login marker)
+        shell: powershell
+        timeout-minutes: 15
         run: |
           Set-Location $env:MT5_DIR
           $proc = Start-Process -FilePath (Join-Path $env:MT5_DIR 'terminal64.exe') -ArgumentList '/portable','/config:login.ini' -WorkingDirectory $env:MT5_DIR -PassThru
-          Write-Host "Terminal started for login check (PID $($proc.Id)). Waiting 120s..."
-          Start-Sleep -Seconds 120
-          $journal = ''
-          $logsDir = Join-Path $env:MT5_DIR 'Logs'
-          if (Test-Path $logsDir) {
-            $logFile = Get-ChildItem $logsDir -Filter '*.log' | Sort-Object LastWriteTime -Descending | Select-Object -First 1
-            if ($null -ne $logFile) { $journal = Get-Content -Raw -Path $logFile.FullName }
-          }
-          # Explicit trade-login failure markers. NOTE: 'MQL5.community authorization
-          # failed' is a harmless periodic line - it is deliberately NOT matched here.
-          if ($journal -match 'login failed|invalid account|no connection|cannot connect|account disabled') {
-            Stop-Process -Id $proc.Id -Force -ErrorAction SilentlyContinue
-            throw 'Broker login failed (see journal excerpt in the step log). Check HFM_MT5_LOGIN / HFM_MT5_PASSWORD / HFM_MT5_SERVER secrets.'
-          }
-          if ($journal -match 'login on|connected to') {
-            Write-Host 'Login looks good (journal shows login/connected).'
-          } else {
-            Write-Warning 'No conclusive login marker in the journal after 120s - proceeding anyway; the tester run is the real test.'
+          Write-Host "Terminal started for login check (PID $($proc.Id)). Polling journal up to 600s for a login marker..."
+          $deadline = (Get-Date).AddSeconds(600)
+          $loggedIn = $false
+          $failed = $false
+          while ((Get-Date) -lt $deadline) {
+            $journal = ''
+            $logsDir = Join-Path $env:MT5_DIR 'Logs'
+            if (Test-Path $logsDir) {
+              $logFile = Get-ChildItem $logsDir -Filter '*.log' | Sort-Object LastWriteTime -Descending | Select-Object -First 1
+              if ($null -ne $logFile) { $journal = Get-Content -Raw -Path $logFile.FullName }
+            }
+            # Explicit trade-login failure markers. NOTE: 'MQL5.community authorization
+            # failed' is a harmless periodic line - it is deliberately NOT matched here.
+            if ($journal -match 'login failed|invalid account|no connection|cannot connect|account disabled') { $failed = $true; break }
+            if ($journal -match 'logged in|login on|connected to|authorized on') { $loggedIn = $true; break }
+            if ($proc.HasExited) { break }
+            Start-Sleep -Seconds 30
           }
           Stop-Process -Id $proc.Id -Force -ErrorAction SilentlyContinue
-          Start-Sleep -Seconds 5
-          Write-Host 'Pre-flight done.'
+          if (-not $proc.WaitForExit(60000)) { Write-Warning 'Pre-flight terminal did not exit within 60s after stop.' }
+          Start-Sleep -Seconds 10
+          if ($failed) { throw 'Broker login FAILED (journal shows an explicit failure marker). Check HFM_MT5_LOGIN / HFM_MT5_PASSWORD / HFM_MT5_SERVER secrets.' }
+          if (-not $loggedIn) {
+            Write-Host '--- journal tail ---'
+            $logsDir = Join-Path $env:MT5_DIR 'Logs'
+            if (Test-Path $logsDir) {
+              Get-ChildItem $logsDir -Filter '*.log' | Sort-Object LastWriteTime -Descending | Select-Object -First 1 | ForEach-Object {
+                Get-Content -Tail 30 $_.FullName -ErrorAction SilentlyContinue | Write-Host
+              }
+            }
+            throw 'Broker login NOT confirmed within 600s - no login marker in the journal. The terminal never logged in (fresh-runner first-run issue). See journal tail above.'
+          }
+          Write-Host 'Pre-flight login confirmed by journal marker.'
 
       - name: Install EA, sync script and .set file
         shell: powershell
@@ -216,13 +271,26 @@ jobs:
           Write-Host "Terminal started for history sync (PID $($proc.Id)). Waiting up to 600s for sync-result.txt..."
           $deadline = (Get-Date).AddSeconds(600)
           $found = $false
+          $seenLines = 0
           while ((Get-Date) -lt $deadline) {
             if (Test-Path $resultFile) { $found = $true; break }
             if ($proc.HasExited) { break }
-            Start-Sleep -Seconds 15
+            $logsDir = Join-Path $env:MT5_DIR 'Logs'
+            if (Test-Path $logsDir) {
+              $logFile = Get-ChildItem $logsDir -Filter '*.log' | Sort-Object LastWriteTime -Descending | Select-Object -First 1
+              if ($null -ne $logFile) {
+                $lines = @(Get-Content -Path $logFile.FullName -ErrorAction SilentlyContinue)
+                if ($lines.Count -gt $seenLines) {
+                  $lines[$seenLines..($lines.Count - 1)] | ForEach-Object { Write-Host "journal: $_" }
+                  $seenLines = $lines.Count
+                }
+              }
+            }
+            Start-Sleep -Seconds 30
           }
           Stop-Process -Id $proc.Id -Force -ErrorAction SilentlyContinue
-          Start-Sleep -Seconds 5
+          if (-not $proc.WaitForExit(60000)) { Write-Warning 'Sync terminal did not exit within 60s after stop.' }
+          Start-Sleep -Seconds 10
           if (-not $found) {
             Write-Host '--- journal tail (every log location) ---'
             $logsDirs = @((Join-Path $env:MT5_DIR 'Logs'))
@@ -236,7 +304,7 @@ jobs:
                 }
               }
             }
-            throw 'History sync did not produce sync-result.txt within 600s - the SyncHistory script did not run (check the [Experts] Script key in history.ini) or the terminal never logged in. See journal tail above.'
+            throw 'History sync did not produce sync-result.txt within 600s - the SyncHistory script did not run. See journal lines above (the pre-flight gate already confirmed a login, so check the [Experts] Script key in history.ini).'
           }
           $content = Get-Content -Raw -Path $resultFile
           Write-Host $content
@@ -244,7 +312,7 @@ jobs:
           $connected = 0
           if ($content -match 'M1_BARS=(-?\d+)') { $bars = [int]$Matches[1] }
           if ($content -match 'TERMINAL_CONNECTED=(\d+)') { $connected = [int]$Matches[1] }
-          if ($connected -ne 1) { throw 'History sync: terminal NOT connected to the HFM server (TERMINAL_CONNECTED=0). Check the HFM_MT5_SERVER secret - the server name is unverified.' }
+          if ($connected -ne 1) { throw 'History sync: terminal NOT connected to the HFM server (TERMINAL_CONNECTED=0). The server name was verified correct from the HFM app - check the journal lines in the artifact.' }
           if ($bars -lt 50000) { throw "History sync: only $bars M1 bars for XAUUSD (need at least 50000 for the Aug-Oct window). History did not download - check the journal in the artifact." }
           Write-Host "History sync OK: $bars M1 bars for XAUUSD, terminal connected."
 
