@@ -40,6 +40,19 @@
 # FIX #5: a warm-up step runs the terminal once for 300s first so first-run
 # setup finishes before the seed step, and seed_login.py retries
 # initialize() up to 3 times with 60s gaps.
+# Run #6 (2026-11-18) FAILED at the seed step again: mt5.initialize() gave
+# IPC timeout (-10005) 3 times (~18 min). The journal shows why the fixed
+# 300s warm-up was not enough: the terminal downloaded LiveUpdate build
+# 6230 during warm-up and RESTARTED ITSELF at 13:15:20 UTC - 10 seconds
+# after warm-up ended and exactly when the seed step started - so
+# initialize() hit a terminal mid-restart. FIX #6: (a) warm-up v2 polls
+# the journal instead of sleeping a fixed 300s - it only finishes after
+# 120s of journal silence with the terminal still alive, and if the
+# terminal exits on its own (self-restart) it waits 60s, restarts it and
+# keeps polling, so the LiveUpdate restart is observed and waited out
+# BEFORE the seed step; (b) seed_login.py now kills any leftover
+# terminal64.exe before the first attempt and between retries, so every
+# initialize() attempt gets a fresh terminal.
 #
 # No credentials live in this repo. The demo login/password/server come from
 # GitHub Secrets (HFM_MT5_LOGIN / HFM_MT5_PASSWORD / HFM_MT5_SERVER) and are
@@ -139,18 +152,57 @@ jobs:
           BT_DEPOSIT: ${{ inputs.deposit }}
         run: .\scripts\prepare-tester-config.ps1
 
-      - name: Warm up terminal (let first-run setup finish)
+      - name: Warm up terminal (let first-run setup + LiveUpdate restart finish)
         shell: powershell
-        timeout-minutes: 10
+        timeout-minutes: 20
         run: |
           Set-Location $env:MT5_DIR
-          $proc = Start-Process -FilePath (Join-Path $env:MT5_DIR 'terminal64.exe') -ArgumentList '/portable','/config:login.ini' -WorkingDirectory $env:MT5_DIR -PassThru
-          Write-Host "Warm-up terminal started (PID $($proc.Id)). Waiting 300s for first-run recompilation + LiveUpdate to finish..."
-          Start-Sleep -Seconds 300
+          $logsDir = Join-Path $env:MT5_DIR 'Logs'
+          $terminal = Join-Path $env:MT5_DIR 'terminal64.exe'
+          function Get-JournalState {
+            $logFile = $null
+            if (Test-Path $logsDir) {
+              $logFile = Get-ChildItem $logsDir -Filter '*.log' | Sort-Object LastWriteTime -Descending | Select-Object -First 1
+            }
+            if ($null -eq $logFile) { return @{ Text = ''; LastWrite = $null } }
+            return @{ Text = (Get-Content -Raw -Path $logFile.FullName); LastWrite = $logFile.LastWriteTime }
+          }
+          $proc = Start-Process -FilePath $terminal -ArgumentList '/portable','/config:login.ini' -WorkingDirectory $env:MT5_DIR -PassThru
+          Write-Host "Warm-up terminal started (PID $($proc.Id)). Polling journal up to 900s for first-run + LiveUpdate to settle..."
+          $deadline = (Get-Date).AddSeconds(900)
+          $settled = $false
+          $sawUpdate = $false
+          while ((Get-Date) -lt $deadline) {
+            if ($proc.HasExited) {
+              Write-Host 'Warm-up terminal exited on its own (likely a LiveUpdate self-restart). Waiting 60s, then restarting it...'
+              Start-Sleep -Seconds 60
+              $proc = Start-Process -FilePath $terminal -ArgumentList '/portable','/config:login.ini' -WorkingDirectory $env:MT5_DIR -PassThru
+              Write-Host "Warm-up terminal restarted (PID $($proc.Id))."
+              Start-Sleep -Seconds 20
+              continue
+            }
+            $st = Get-JournalState
+            if ($st.Text -match 'LiveUpdate') { $sawUpdate = $true }
+            if ($null -ne $st.LastWrite) {
+              $silentFor = ((Get-Date) - $st.LastWrite).TotalSeconds
+              if ($silentFor -ge 120) {
+                Write-Host "Journal silent for $([int]$silentFor)s (LiveUpdate seen: $sawUpdate). Warm-up settled."
+                $settled = $true
+                break
+              }
+            }
+            Start-Sleep -Seconds 20
+          }
+          if (-not $settled) { Write-Warning 'Warm-up did not observe 120s of journal silence within 900s - proceeding anyway; the seed step will show whether IPC works.' }
           Stop-Process -Id $proc.Id -Force -ErrorAction SilentlyContinue
           if (-not $proc.WaitForExit(60000)) { Write-Warning 'Warm-up terminal did not exit within 60s after stop.' }
-          Start-Sleep -Seconds 10
-          Write-Host 'Warm-up done - first-run setup should be complete.'
+          Start-Sleep -Seconds 30
+          if ($null -ne (Get-Process terminal64 -ErrorAction SilentlyContinue)) {
+            Write-Warning 'terminal64.exe still running after warm-up stop - forcing stop.'
+            Stop-Process -Name terminal64 -Force -ErrorAction SilentlyContinue
+            Start-Sleep -Seconds 10
+          }
+          Write-Host 'Warm-up done - first-run setup should be complete and no terminal left running.'
 
       - name: Seed broker login via MetaTrader5 Python
         shell: powershell
