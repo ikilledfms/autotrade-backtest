@@ -243,7 +243,7 @@ jobs:
           HFM_MT5_PASSWORD: ${{ secrets.HFM_MT5_PASSWORD }}
           HFM_MT5_SERVER: ${{ secrets.HFM_MT5_SERVER }}
         run: |
-                    python -c "import sys; print('python exe:', sys.executable); print('python version:', sys.version)"
+          python -c "import sys; print('python exe:', sys.executable); print('python version:', sys.version)"
           if ($LASTEXITCODE -ne 0) { throw 'python is not runnable.' }
           $pyExe = (python -c "import sys; print(sys.executable)")
           if ($pyExe -match 'WindowsApps') { throw "FATAL: 'python' resolves to the Microsoft Store build ($pyExe) - its sandbox cannot open the MT5 IPC named pipe and initialize() always fails with (-10005, 'IPC timeout'). The setup-python step should have prevented this." }
