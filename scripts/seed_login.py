@@ -15,6 +15,7 @@
 # Prints only the account number, server, balance and leverage - NEVER the
 # password. Exits non-zero on any failure so the workflow fails fast.
 import os
+import subprocess
 import sys
 import time
 
@@ -30,6 +31,20 @@ if not LOGIN or not PASSWORD or not SERVER:
           file=sys.stderr)
     sys.exit(2)
 
+def _kill_terminal():
+    # FIX #6: a terminal left over from warm-up, or one mid-restart after a
+    # failed initialize(), breaks the next IPC connect. Kill it so every
+    # attempt starts from a clean state.
+    try:
+        subprocess.run(["taskkill", "/F", "/IM", "terminal64.exe"],
+                       capture_output=True, timeout=30)
+    except Exception as exc:  # noqa: BLE001 - best effort only
+        print(f"seed_login: taskkill skipped ({exc})", file=sys.stderr)
+
+
+_kill_terminal()
+time.sleep(10)
+
 path = os.path.join(MT5_DIR, "terminal64.exe")
 ok = False
 for attempt in range(1, 4):
@@ -42,7 +57,8 @@ for attempt in range(1, 4):
           file=sys.stderr)
     mt5.shutdown()
     if attempt < 3:
-        time.sleep(60)
+        _kill_terminal()
+        time.sleep(30)
 if not ok:
     print("seed_login: initialize failed after 3 attempts", file=sys.stderr)
     sys.exit(1)
