@@ -290,16 +290,6 @@ jobs:
             if ($proc.HasExited) { break }
             Start-Sleep -Seconds 30
           }
-          # FIX #7 diagnostics: does the warm-up terminal have a GUI window,
-          # and is its IPC named pipe visible from this session? An empty
-          # title and no MT5 pipe while the process runs = hypothesis #3
-          # (no interactive desktop) - see DIAGNOSIS.md section 4.
-          $proc.Refresh()
-          Write-Host "Warm-up terminal window title: '$($proc.MainWindowTitle)' handle: $($proc.MainWindowHandle)"
-          try {
-            $mt5pipes = [System.IO.Directory]::GetFiles('\\.\pipe\') | Where-Object { $_ -match 'MT5' }
-            if ($mt5pipes) { Write-Host "MT5 named pipes visible: $($mt5pipes -join ', ')" } else { Write-Host 'WARNING: no MT5 named pipe visible while the terminal is running.' }
-          } catch { Write-Host "Pipe listing failed: $($_.Exception.Message)" }
           Stop-Process -Id $proc.Id -Force -ErrorAction SilentlyContinue
           if (-not $proc.WaitForExit(60000)) { Write-Warning 'Pre-flight terminal did not exit within 60s after stop.' }
           Start-Sleep -Seconds 10
@@ -413,16 +403,6 @@ jobs:
             }
             Start-Sleep -Seconds 30
           }
-          # FIX #7 diagnostics: does the warm-up terminal have a GUI window,
-          # and is its IPC named pipe visible from this session? An empty
-          # title and no MT5 pipe while the process runs = hypothesis #3
-          # (no interactive desktop) - see DIAGNOSIS.md section 4.
-          $proc.Refresh()
-          Write-Host "Warm-up terminal window title: '$($proc.MainWindowTitle)' handle: $($proc.MainWindowHandle)"
-          try {
-            $mt5pipes = [System.IO.Directory]::GetFiles('\\.\pipe\') | Where-Object { $_ -match 'MT5' }
-            if ($mt5pipes) { Write-Host "MT5 named pipes visible: $($mt5pipes -join ', ')" } else { Write-Host 'WARNING: no MT5 named pipe visible while the terminal is running.' }
-          } catch { Write-Host "Pipe listing failed: $($_.Exception.Message)" }
           Stop-Process -Id $proc.Id -Force -ErrorAction SilentlyContinue
           if (-not $proc.WaitForExit(60000)) { Write-Warning 'Sync terminal did not exit within 60s after stop.' }
           Start-Sleep -Seconds 10
