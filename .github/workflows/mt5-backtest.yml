@@ -119,6 +119,14 @@ jobs:
       - name: Check out repo
         uses: actions/checkout@v4
 
+      - name: Use real CPython 3.12 (never Microsoft Store Python)
+        # FIX #7, hypothesis #1: a Store Python cannot open the MT5 IPC
+        # named pipe and initialize() always fails (-10005). setup-python
+        # puts a real tool-cache CPython first in PATH.
+        uses: actions/setup-python@v5
+        with:
+          python-version: '3.12'
+
       - name: Download MT5 installer (MetaQuotes)
         shell: powershell
         run: |
@@ -139,6 +147,19 @@ jobs:
           if (-not (Test-Path $terminal)) { throw "terminal64.exe not found at $terminal after install" }
           if (-not (Test-Path $editor)) { throw "MetaEditor64.exe not found at $editor after install" }
           Write-Host 'MT5 installed.'
+
+      - name: Diagnose runner session + Python identity (Fix #7)
+        # Read-only. Prints the facts hypotheses #1/#3/#5 turn on, so run
+        # #8's log names the root cause instead of only showing -10005.
+        shell: powershell
+        run: |
+          Write-Host "whoami: $(whoami)"
+          Write-Host "shell session id: $((Get-Process -Id $PID).SessionId)"
+          Write-Host "USERNAME=$env:USERNAME COMPUTERNAME=$env:COMPUTERNAME"
+          python -c "import sys; print('python exe:', sys.executable); print('python version:', sys.version)"
+          Write-Host "terminal build: $((Get-Item (Join-Path $env:MT5_DIR 'terminal64.exe')).VersionInfo.FileVersion)"
+          $terms = Get-Process terminal64 -ErrorAction SilentlyContinue
+          if ($terms) { $terms | ForEach-Object { Write-Host "terminal64 running: PID $($_.Id) session $($_.SessionId) title '$($_.MainWindowTitle)'" } } else { Write-Host 'no terminal64.exe running (expected before warm-up).' }
 
       - name: Generate tester.ini + login.ini + history.ini from templates + secrets
         shell: powershell
@@ -194,6 +215,16 @@ jobs:
             Start-Sleep -Seconds 20
           }
           if (-not $settled) { Write-Warning 'Warm-up did not observe 120s of journal silence within 900s - proceeding anyway; the seed step will show whether IPC works.' }
+          # FIX #7 diagnostics: does the warm-up terminal have a GUI window,
+          # and is its IPC named pipe visible from this session? An empty
+          # title and no MT5 pipe while the process runs = hypothesis #3
+          # (no interactive desktop) - see DIAGNOSIS.md section 4.
+          $proc.Refresh()
+          Write-Host "Warm-up terminal window title: '$($proc.MainWindowTitle)' handle: $($proc.MainWindowHandle)"
+          try {
+            $mt5pipes = [System.IO.Directory]::GetFiles('\\.\pipe\') | Where-Object { $_ -match 'MT5' }
+            if ($mt5pipes) { Write-Host "MT5 named pipes visible: $($mt5pipes -join ', ')" } else { Write-Host 'WARNING: no MT5 named pipe visible while the terminal is running.' }
+          } catch { Write-Host "Pipe listing failed: $($_.Exception.Message)" }
           Stop-Process -Id $proc.Id -Force -ErrorAction SilentlyContinue
           if (-not $proc.WaitForExit(60000)) { Write-Warning 'Warm-up terminal did not exit within 60s after stop.' }
           Start-Sleep -Seconds 30
@@ -212,8 +243,13 @@ jobs:
           HFM_MT5_PASSWORD: ${{ secrets.HFM_MT5_PASSWORD }}
           HFM_MT5_SERVER: ${{ secrets.HFM_MT5_SERVER }}
         run: |
+                    python -c "import sys; print('python exe:', sys.executable); print('python version:', sys.version)"
+          if ($LASTEXITCODE -ne 0) { throw 'python is not runnable.' }
+          $pyExe = (python -c "import sys; print(sys.executable)")
+          if ($pyExe -match 'WindowsApps') { throw "FATAL: 'python' resolves to the Microsoft Store build ($pyExe) - its sandbox cannot open the MT5 IPC named pipe and initialize() always fails with (-10005, 'IPC timeout'). The setup-python step should have prevented this." }
           python -m pip install --quiet MetaTrader5
           if ($LASTEXITCODE -ne 0) { throw 'pip install MetaTrader5 failed.' }
+          python -m pip show MetaTrader5
           python scripts\seed_login.py
           if ($LASTEXITCODE -ne 0) { throw 'Seed login failed - the terminal could not log in to HFM. See the script output above.' }
           Write-Host 'Waiting for any terminal64.exe process to exit (lock release)...'
@@ -254,6 +290,16 @@ jobs:
             if ($proc.HasExited) { break }
             Start-Sleep -Seconds 30
           }
+          # FIX #7 diagnostics: does the warm-up terminal have a GUI window,
+          # and is its IPC named pipe visible from this session? An empty
+          # title and no MT5 pipe while the process runs = hypothesis #3
+          # (no interactive desktop) - see DIAGNOSIS.md section 4.
+          $proc.Refresh()
+          Write-Host "Warm-up terminal window title: '$($proc.MainWindowTitle)' handle: $($proc.MainWindowHandle)"
+          try {
+            $mt5pipes = [System.IO.Directory]::GetFiles('\\.\pipe\') | Where-Object { $_ -match 'MT5' }
+            if ($mt5pipes) { Write-Host "MT5 named pipes visible: $($mt5pipes -join ', ')" } else { Write-Host 'WARNING: no MT5 named pipe visible while the terminal is running.' }
+          } catch { Write-Host "Pipe listing failed: $($_.Exception.Message)" }
           Stop-Process -Id $proc.Id -Force -ErrorAction SilentlyContinue
           if (-not $proc.WaitForExit(60000)) { Write-Warning 'Pre-flight terminal did not exit within 60s after stop.' }
           Start-Sleep -Seconds 10
@@ -367,6 +413,16 @@ jobs:
             }
             Start-Sleep -Seconds 30
           }
+          # FIX #7 diagnostics: does the warm-up terminal have a GUI window,
+          # and is its IPC named pipe visible from this session? An empty
+          # title and no MT5 pipe while the process runs = hypothesis #3
+          # (no interactive desktop) - see DIAGNOSIS.md section 4.
+          $proc.Refresh()
+          Write-Host "Warm-up terminal window title: '$($proc.MainWindowTitle)' handle: $($proc.MainWindowHandle)"
+          try {
+            $mt5pipes = [System.IO.Directory]::GetFiles('\\.\pipe\') | Where-Object { $_ -match 'MT5' }
+            if ($mt5pipes) { Write-Host "MT5 named pipes visible: $($mt5pipes -join ', ')" } else { Write-Host 'WARNING: no MT5 named pipe visible while the terminal is running.' }
+          } catch { Write-Host "Pipe listing failed: $($_.Exception.Message)" }
           Stop-Process -Id $proc.Id -Force -ErrorAction SilentlyContinue
           if (-not $proc.WaitForExit(60000)) { Write-Warning 'Sync terminal did not exit within 60s after stop.' }
           Start-Sleep -Seconds 10
